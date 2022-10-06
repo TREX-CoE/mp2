@@ -1,0 +1,259 @@
+#+TITLE: MP2
+#+PROPERTY: header-args :tangle mp2.c :comments org
+
+
+This code reads molecular integrals and orbital energies from a [[https://github.com/trex-coe/trexio][TREXIO]]
+file and computes the [[https://en.wikipedia.org/wiki/M%C3%B8ller%E2%80%93Plesset_perturbation_theory][Moller-Plesset 2nd-order correction]] to the
+energy for closed-shell systems:
+
+\[
+E_{\text{MP2}} = \sum_{ij}^{\text{occ}} \sum_{ab}^{\text{virt}}
+   \frac{ \langle i j | a b \rangle ( 
+          2 \langle i j | a b \rangle - \langle i j | b a \rangle )}
+        {e_i + e_j - e_a - e_b}
+\]
+
+where:
+
+- $e_p$ is the energy of the p-th orbital (the p-th eigenvalue of the
+  Fock matrix)
+- $i,j$ label /occupied/ orbitals
+- $a,b$ label /virtual/ orbitals
+
+The number of occupied orbitals is half the number of electrons,
+because each orbital contains two electrons. Unoccupied orbitals
+are called virtual orbitals.
+
+As the reference used here is a Hartree-Fock ground state, the
+~n_occ~ first orbitals are occupied (lowest in energy) and the
+remaining are virtual. Therefore, we have $e_i < e_a$.
+
+* Includes
+
+#+begin_src c
+#include <stdio.h>
+#include <trexio.h>
+#include <stdint.h>
+#include <err.h>
+#include <string.h>
+#include <stdlib.h>
+#include <assert.h>
+#+end_src
+
+* Reordering function
+
+  There are permutation symmetries in the indices of integrals, which
+  are exploited to reduce the storage of the integrals in the TREXIO file.
+
+  \[
+  \langle i j | k l \rangle = 
+  \langle k j | i l \rangle = 
+  \langle k l | i j \rangle = 
+  \langle i l | k j \rangle = 
+  \langle j i | l k \rangle = 
+  \langle j k | l i \rangle = 
+  \langle l k | j i \rangle = 
+  \langle l i | j k \rangle 
+  \]
+
+  The following function swaps the four indices such that any of the 8
+  possible combinations gives the same quartet.
+
+#+begin_src c
+void reorder(int *i_, int *j_, int *k_, int *l_) {
+  {
+    assert (*i_ >= 0); assert (*j_ >= 0);
+    assert (*k_ >= 0); assert (*l_ >= 0);
+
+    const int i = *i_; const int j = *j_;
+    const int k = *k_; const int l = *l_;
+
+    if (k<i) {
+      ,*k_ = i ; *i_ = k;
+    }
+    if (l<j) {
+      ,*l_ = j ; *j_ = l;
+    }
+  }
+  {
+    const int i = *i_; const int j = *j_;
+    const int k = *k_; const int l = *l_;
+
+    if (j<i) {
+      ,*i_ = j ; *j_ = i;
+      ,*k_ = l ; *l_ = k;
+    }
+  }
+}
+#+end_src
+
+  We chose an ordering where the smallest indices come first.
+  in MP2, we always have 2 occupied indices and 2 virtual indices:
+  $\langle i j | a b \rangle$, so it is now easy to filter out all the
+  integrals which don't have 2 occupied indices on the left and 2
+  virtual indices on the right.
+  
+* MP2 program
+
+#+begin_src c
+int main(int argc, char** argv)
+{
+#+end_src
+
+** Open the TREXIO file
+
+   The name of the TREXIO file should be given as a command-line argument.
+
+#+begin_src c
+  if (argc < 2) {
+    err(-1, "usage: mp2 trexio_file.hdf5\n");
+  }
+
+  trexio_exit_code rc = TREXIO_SUCCESS;
+  trexio_t* trexio_file = trexio_open(argv[1], 'r', TREXIO_HDF5, &rc);
+
+  if (rc != TREXIO_SUCCESS) {
+    err(-1, "Error opening file %s", argv[1]);
+    exit(1);
+  }
+  assert (trexio_file != NULL);
+#+end_src
+
+** Read parameters from TREXIO
+
+   We need to read small scalar variables. The first ones are the
+   number of up-spin and down-spin electrons to define the number of
+   occupied orbitals ~n_occ~, and check that we are in a closed-shell system.
+
+#+begin_src c
+  int n_up = 0;
+  rc = trexio_read_electron_up_num(trexio_file, &n_up);
+  if (rc != TREXIO_SUCCESS) err(1, "Error reading n_up");
+  assert(n_up > 0);
+
+  int n_dn = 0;
+  rc = trexio_read_electron_up_num(trexio_file, &n_dn);
+  if (rc != TREXIO_SUCCESS) err(1, "Error reading n_dn");
+  assert(n_up > 0);
+
+  if (n_up != n_dn) err(1, "This code is works only for n_up = n_dn");
+
+  const int n_occ = n_up;
+#+end_src
+
+  We also need to read the total number of molecular orbitals to
+  compute the number of virtual orbitals ~n_virt~.
+  
+#+begin_src c
+  int mo_num = 0;
+  rc = trexio_read_mo_num(trexio_file, &mo_num);
+  if (rc != TREXIO_SUCCESS) err(1, "Error reading mo_num");
+  assert(mo_num > 0);
+
+  const int n_virt = mo_num - n_up;
+#+end_src
+
+** Quantities involved in the MP2 equation
+   
+   We assume the TREXIO file contains electron repulsion integrals
+   (ERI) in the molecular orbital basis, and orbital energies.
+
+   We first read the orbital energies:
+   
+#+begin_src c
+  double*  epsilon = malloc(mo_num * sizeof(double));
+  rc = trexio_read_mo_energy(trexio_file, epsilon);
+  if (rc != TREXIO_SUCCESS) err(1, "Error reading mo_energy");
+#+end_src
+
+   Then we read the electron repulsion integrals. They are stored in a
+   sparse data format, so we obtain quartets of indices and values for
+   non-zero integrals.
+   
+#+begin_src c
+  int64_t  n_integrals;
+  rc = trexio_read_mo_2e_int_eri_size(trexio_file, &n_integrals);
+  if (rc != TREXIO_SUCCESS) err(1, "Error reading n_integrals");
+  assert(n_integrals > 0);
+
+  int* const index = malloc(4*n_integrals * sizeof(int));
+  if (index == NULL) err(1, "Malloc failed for index");
+
+  double* const value = malloc(n_integrals * sizeof(double));
+  if (index == NULL) err(1, "Malloc failed for value");
+
+  int64_t count = n_integrals;
+  rc = trexio_read_mo_2e_int_eri(trexio_file, 0L, &count, index, value);
+#+end_src
+
+  We transform these arrays of indices and values into an array of
+  double, where the index of the quartet ~(i,j,a,b)~ is located at
+  address ~b-n_occ + n_virt*(a-n_occ + n_virt*(j + n_occ*i))~. Only
+  required integrals are stored.
+
+  By symmetry, the integral at ~(i,j,a,b)~ is equal to the integral at
+  ~(j,i,b,a)~.  As integrals may be stored only once in the integrals
+  file, to be sure we don't miss integrals we store the value at both
+  addresses.
+  
+#+begin_src c
+  size_t nmax = n_occ*n_occ*n_virt*n_virt;
+  double* integral = malloc(nmax * sizeof(double));
+  memset(integral, 0, nmax*sizeof(double));
+
+  for (size_t kk=0; kk<n_integrals ; ++kk) {
+    int i = index[4*kk+0];  assert (i >= 0);
+    int j = index[4*kk+1];  assert (j >= 0);
+    int a = index[4*kk+2];  assert (a >= 0);
+    int b = index[4*kk+3];  assert (b >= 0);
+
+    reorder(&i, &j, &a, &b);
+    if (i >= n_occ || j >= n_occ || a < n_occ || b < n_occ ) {
+      continue;
+    } else {
+
+      a -= n_occ;
+      b -= n_occ;
+      const size_t ijab = b + n_virt*(a + n_virt*(j + n_occ*i));
+      const size_t jiba = a + n_virt*(b + n_virt*(i + n_occ*j));
+      integral[ijab] = value[kk];
+      integral[jiba] = value[kk];
+    }
+  }
+#+end_src
+
+
+* MP2 computation
+
+#+begin_src c
+  double Emp2 = 0.;
+
+  for   (int i=0 ; i<n_occ ; ++i) {
+    for (int j=0 ; j<n_occ ; ++j) {
+
+      const size_t shift = n_virt*(j + n_occ*i);
+
+      for   (int a=0 ; a<n_virt ; ++a) {
+        for (int b=0 ; b<n_virt ; ++b) {
+
+          const size_t ijab = b + n_virt*(a + shift);
+          const size_t ijba = a + n_virt*(b + shift);
+
+          Emp2 += ( integral[ijab]*(2.*integral[ijab]-integral[ijba]) ) /
+            (epsilon[i] + epsilon[j] - epsilon[n_occ+a] - epsilon[n_occ+b]);
+
+        }
+      }
+
+    }
+  }
+#+end_src
+
+* Termination
+  
+  Print the result:
+
+#+begin_src c
+  printf("Emp2 = %15.12f\n", Emp2);
+}
+#+end_src
