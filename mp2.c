@@ -67,14 +67,15 @@ int main(int argc, char** argv)
 
 
   if (argc < 2) {
-    err(-1, "usage: mp2 trexio_file.hdf5\n");
+    fprintf(stderr, "usage: mp2 trexio_file.hdf5\n");
+    exit(1);
   }
 
   trexio_exit_code rc = TREXIO_SUCCESS;
   trexio_t* trexio_file = trexio_open(argv[1], 'r', TREXIO_HDF5, &rc);
 
   if (rc != TREXIO_SUCCESS) {
-    err(-1, "Error opening file %s", argv[1]);
+    fprintf(stderr, "Error opening file %s", argv[1]);
     exit(1);
   }
   assert (trexio_file != NULL);
@@ -88,15 +89,24 @@ int main(int argc, char** argv)
 
   int n_up = 0;
   rc = trexio_read_electron_up_num(trexio_file, &n_up);
-  if (rc != TREXIO_SUCCESS) err(1, "Error reading n_up");
+  if (rc != TREXIO_SUCCESS) {
+    fprintf(stderr, "Error reading n_up");
+    exit(1);
+  }
   assert(n_up > 0);
 
   int n_dn = 0;
   rc = trexio_read_electron_up_num(trexio_file, &n_dn);
-  if (rc != TREXIO_SUCCESS) err(1, "Error reading n_dn");
+  if (rc != TREXIO_SUCCESS) {
+    fprintf(stderr, "Error reading n_dn");
+    exit(1);
+  }
   assert(n_up > 0);
 
-  if (n_up != n_dn) err(1, "This code is works only for n_up = n_dn");
+  if (n_up != n_dn) {
+    fprintf(stderr, "This code is works only for n_up = n_dn");
+    exit(1);
+  }
 
   const int n_occ = n_up;
 
@@ -108,7 +118,10 @@ int main(int argc, char** argv)
 
   int mo_num = 0;
   rc = trexio_read_mo_num(trexio_file, &mo_num);
-  if (rc != TREXIO_SUCCESS) err(1, "Error reading mo_num");
+  if (rc != TREXIO_SUCCESS) {
+    fprintf(stderr, "Error reading mo_num");
+    exit(1);
+  }
   assert(mo_num > 0);
 
   const int n_virt = mo_num - n_up;
@@ -123,7 +136,10 @@ int main(int argc, char** argv)
 
   double*  epsilon = malloc(mo_num * sizeof(double));
   rc = trexio_read_mo_energy(trexio_file, epsilon);
-  if (rc != TREXIO_SUCCESS) err(1, "Error reading mo_energy");
+  if (rc != TREXIO_SUCCESS) {
+    fprintf(stderr, "Error reading mo_energy");
+    exit(1);
+  }
 
 
 
@@ -134,14 +150,23 @@ int main(int argc, char** argv)
 
   int64_t  n_integrals;
   rc = trexio_read_mo_2e_int_eri_size(trexio_file, &n_integrals);
-  if (rc != TREXIO_SUCCESS) err(1, "Error reading n_integrals");
+  if (rc != TREXIO_SUCCESS) {
+    fprintf(stderr, "Error reading n_integrals");
+    exit(1);
+  }
   assert(n_integrals > 0);
 
   int* const index = malloc(4*n_integrals * sizeof(int));
-  if (index == NULL) err(1, "Malloc failed for index");
+  if (index == NULL) {
+    fprintf(stderr, "Malloc failed for index");
+    exit(1);
+  }
 
   double* const value = malloc(n_integrals * sizeof(double));
-  if (index == NULL) err(1, "Malloc failed for value");
+  if (index == NULL) {
+    fprintf(stderr, "Malloc failed for value");
+    exit(1);
+  }
 
   int64_t count = n_integrals;
   rc = trexio_read_mo_2e_int_eri(trexio_file, 0L, &count, index, value);
