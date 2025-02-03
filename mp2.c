@@ -96,7 +96,7 @@ int main(int argc, char** argv)
   assert(n_up > 0);
 
   int n_dn = 0;
-  rc = trexio_read_electron_up_num(trexio_file, &n_dn);
+  rc = trexio_read_electron_dn_num(trexio_file, &n_dn);
   if (rc != TREXIO_SUCCESS) {
     fprintf(stderr, "Error reading n_dn");
     exit(1);
